@@ -16,12 +16,16 @@ import bpy
 from . import boolean_ops
 from . import mirror_ops
 from . import wireframe_ops
+from . import coat3d_ops
+from . import menu_ops
 
 # 所有功能模块，按需扩充
 _MODULES = (
     boolean_ops,
     mirror_ops,
     wireframe_ops,
+    coat3d_ops,
+    menu_ops,
 )
 
 

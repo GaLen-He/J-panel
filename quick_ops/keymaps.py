@@ -9,6 +9,9 @@
 - qops.interactive_mirror  ->  Alt+Shift+X（交互式镜像）
 - qops.toggle_boolean_visibility  ->  Alt+Shift+H（切换布尔运算体显隐）
 - qops.toggle_wire_visibility     ->  Alt+Shift+W（切换线框物体显隐）
+- qops.coat_send                  ->  未绑定（发送到 3DCoat）
+- qops.coat_getback               ->  未绑定（从 3DCoat 取回）
+- qops.show_panel                 ->  未绑定（呼出完整 J Panel 面板）
 
 如需改默认：修改下面对应 _new_kmi 的 type 与修饰键即可。
 
@@ -53,6 +56,17 @@ def register():
     # 切换线框物体显隐 —— 默认 Alt+Shift+W
     _new_kmi(km, "qops.toggle_wire_visibility",
              type='W', value='PRESS', shift=True, alt=True, action='TOGGLE')
+
+    # 3DCoat 发送 —— 默认不绑定，用户可自行设置
+    _new_kmi(km, "qops.coat_send", type='NONE', value='PRESS')
+
+    # 3DCoat 取回 —— 默认不绑定，用户可自行设置
+    _new_kmi(km, "qops.coat_getback", type='NONE', value='PRESS')
+
+    # 呼出完整 J Panel 面板 —— 默认不绑定，用户可自行设置
+    _new_kmi(km, "qops.show_panel", type='NONE', value='PRESS')
+
+
 
 
 def unregister():

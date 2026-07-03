@@ -32,7 +32,7 @@ quick_ops/
 bl_info = {
     "name": "J Panel",
     "author": "Jialiang",
-    "version": (0, 5, 0),
+    "version": (0, 8, 3),
     "blender": (3, 0, 0),
     "location": "View3D > 侧栏 (N) > J",
     "description": "常用基础操作集成到 N 面板，支持快捷键与 PME。含布尔运算体管理、交互式镜像修改器。",
@@ -42,7 +42,7 @@ bl_info = {
 # 支持“重载脚本”时正确刷新子模块
 if "bpy" in locals():
     import importlib
-    from . import compat, keymaps, preferences, draw_utils
+    from . import compat, keymaps, preferences, draw_utils, coat3d_link
     from . import operators as _operators
     from . import ui as _ui
     importlib.reload(compat)
@@ -50,6 +50,7 @@ if "bpy" in locals():
     importlib.reload(_operators)
     importlib.reload(_ui)
     importlib.reload(keymaps)
+    importlib.reload(coat3d_link)
     importlib.reload(preferences)
 
 import bpy
@@ -58,9 +59,11 @@ from . import operators
 from . import ui
 from . import keymaps
 from . import preferences
+from . import coat3d_link
 
 
 def register():
+    coat3d_link.register_props()
     preferences.register()
     operators.register()
     ui.register()
@@ -73,6 +76,7 @@ def unregister():
     ui.unregister()
     operators.unregister()
     preferences.unregister()
+    coat3d_link.unregister_props()
 
 
 if __name__ == "__main__":
