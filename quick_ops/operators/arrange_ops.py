@@ -44,6 +44,44 @@ def _roots_in(objs):
     return [o for o in objs if not o.parent or o.parent.name not in ns]
 
 
+
+def _reunite_children_to_parent_collection(objs, scene=None):
+    """
+    集合模式下：若某物体的父级在选中集里但不在同一场景集合，
+    把该子物体移动到父级所在的集合（先 unlink 原集合，再 link 父级集合），
+    使父子被视为同一集合的整体。返回被移动的物体名列表。
+    """
+    sc_name = None
+    try:
+        if scene:
+            sc_name = scene.collection.name
+    except Exception:
+        pass
+    names = {o.name for o in objs}
+    moved = []
+    for o in objs:
+        p = o.parent
+        if not p or p.name not in names:
+            continue
+        # 父的“最佳集合”（非场景根）
+        p_colls = [c for c in p.users_collection if c.name != sc_name]
+        o_colls = [c for c in o.users_collection]
+        if not p_colls:
+            continue
+        target = p_colls[0]
+        if target.name in {c.name for c in o_colls}:
+            continue  # 已同集合
+        # 移动：unlink 全部，link 父集合
+        try:
+            for c in list(o.users_collection):
+                c.objects.unlink(o)
+            target.objects.link(o)
+            moved.append(o.name)
+        except Exception:
+            pass
+    return moved
+
+
 def _build_groups(objs, use_parent, use_collection, scene=None):
     if use_collection:
         sc_name=None
@@ -146,6 +184,14 @@ class QOPS_OT_auto_arrange(bpy.types.Operator):
     def execute(self,ctx):
         if not self.pos_json:
             self.pos_json=_take_snapshot(ctx.selected_objects)
+
+        # ①' 集合模式：父子跨集合时，先把子物体移到父级所在集合
+        if self.use_collection:
+            try:
+                _reunite_children_to_parent_collection(
+                    list(ctx.selected_objects), ctx.scene)
+            except Exception:
+                pass
 
         # ① 还原
         _restore_from_snapshot(self.pos_json)
