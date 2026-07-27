@@ -1,344 +1,278 @@
 # -*- coding: utf-8 -*-
 """
-自动铺陈排列 v5
+自动铺陈排列 v6
 ==============
-修复清单：
-1. 属性名 _snapshot 以下划线开头 → Blender 跳过注册 → redo 时快照永远为空
-   → 改名 pos_json (无下划线)
-2. align_ground 在 F9 中可见并可实时调整
-3. use_parent / use_collection 改名去掉类私有前缀，确保 redo 时正确读取
-4. execute 用 bpy.data.objects.get(name) 按名称查找对象，
-   不依赖 context.selected_objects（redo 时选择可能已变化）
-5. 布局计算完全基于快照内保存的原始包围盒，与当前物体位置无关
+关键算法：
+  父子层级同时在选中集时，按深度先移父后移子：
+    根节点：  obj.location = world_origin_target
+    子节点：  obj.location = rot_inv @ (target_child - target_parent)
+  不依赖 matrix_world 刷新，不需要 view_layer.update()。
 """
 
-import bpy
-import math
-import json
+import bpy, math, json
 from mathutils import Vector
+from collections import defaultdict
 
 
-# =============================================================================
-# 包围盒（含 Z，基于世界坐标）
-# =============================================================================
+# ── 包围盒 ──────────────────────────────────────────────────────────────────
 def _world_bbox_obj(obj):
     mw = obj.matrix_world
-    if hasattr(obj, 'bound_box') and obj.type in {
-            'MESH', 'CURVE', 'SURFACE', 'FONT', 'META', 'LIGHT', 'CAMERA'}:
+    if hasattr(obj,'bound_box') and obj.type in {
+            'MESH','CURVE','SURFACE','FONT','META','LIGHT','CAMERA'}:
         try:
-            corners = [mw @ Vector(c) for c in obj.bound_box]
-            xs = [v.x for v in corners]
-            ys = [v.y for v in corners]
-            zs = [v.z for v in corners]
-            return (min(xs), min(ys), min(zs),
-                    max(xs), max(ys), max(zs))
-        except Exception:
-            pass
-    loc = mw.translation
-    return loc.x, loc.y, loc.z, loc.x, loc.y, loc.z
+            cs = [mw @ Vector(c) for c in obj.bound_box]
+            xs=[v.x for v in cs]; ys=[v.y for v in cs]; zs=[v.z for v in cs]
+            return min(xs),min(ys),min(zs),max(xs),max(ys),max(zs)
+        except Exception: pass
+    l = mw.translation
+    return l.x,l.y,l.z,l.x,l.y,l.z
 
 
-# =============================================================================
-# 分组逻辑（纯函数，只依赖传入的对象列表）
-# =============================================================================
+def _group_bbox(objs):
+    mn=mx=None
+    for o in objs:
+        a=_world_bbox_obj(o)
+        mn=(min(mn[i],a[i]) for i in range(3)) if mn else a[:3]
+        mx=(max(mx[i],a[i+3]) for i in range(3)) if mx else a[3:]
+    if mn is None: return (0,0,0),(0,0,0)
+    return tuple(mn),tuple(mx)
+
+
+# ── 分组 ────────────────────────────────────────────────────────────────────
 def _roots_in(objs):
-    names = {o.name for o in objs}
-    return [o for o in objs if o.parent is None or o.parent.name not in names]
+    ns={o.name for o in objs}
+    return [o for o in objs if not o.parent or o.parent.name not in ns]
 
 
 def _build_groups(objs, use_parent, use_collection, scene=None):
     if use_collection:
-        scene_coll = None
-        try:
-            if scene:
-                scene_coll = scene.collection.name
-        except Exception:
-            pass
+        sc_name=None
+        try: sc_name=scene.collection.name if scene else None
+        except: pass
         def best(o):
-            cs = [c for c in o.users_collection if c.name != scene_coll]
-            return max(cs, key=lambda c: len(c.name)).name if cs else None
-        gmap = {}
+            cs=[c for c in o.users_collection if c.name!=sc_name]
+            return max(cs,key=lambda c:len(c.name)).name if cs else None
+        gmap={}
+        for o in objs: gmap.setdefault(best(o) or "_"+o.name,[]).append(o)
+        return [{'roots':_roots_in(g),'all':g} for g in gmap.values()]
+    if use_parent:
+        sel={o.name for o in objs}
+        def root(o): return o if(not o.parent or o.parent.name not in sel) else root(o.parent)
+        gmap={}
         for o in objs:
-            k = best(o) or ("_" + o.name)
-            gmap.setdefault(k, []).append(o)
-        return [{'roots': _roots_in(g), 'all': g} for g in gmap.values()]
-
-    elif use_parent:
-        sel = {o.name for o in objs}
-        def root(o):
-            return o if (not o.parent or o.parent.name not in sel) else root(o.parent)
-        gmap = {}
-        for o in objs:
-            r = root(o)
-            gmap.setdefault(r.name, {'roots': [r], 'all': []})['all'].append(o)
+            r=root(o); gmap.setdefault(r.name,{'roots':[r],'all':[]})['all'].append(o)
         return list(gmap.values())
+    return [{'roots':[o],'all':[o]} for o in objs]
 
-    return [{'roots': [o], 'all': [o]} for o in objs]
 
-
-# =============================================================================
-# 快照辅助
-# =============================================================================
+# ── 快照 ────────────────────────────────────────────────────────────────────
 def _take_snapshot(objs):
-    """记录每个对象的位置和原始包围盒（用于 redo 时从同一起点重排）。"""
-    snap = {}
+    snap={}
     for o in objs:
-        bb = _world_bbox_obj(o)
-        snap[o.name] = {
-            'loc': [o.location.x, o.location.y, o.location.z],
-            'bb': list(bb),           # [xmin,ymin,zmin,xmax,ymax,zmax]
+        bb=_world_bbox_obj(o)
+        try: wloc=list(o.matrix_world.translation)
+        except: wloc=[o.location.x,o.location.y,o.location.z]
+        snap[o.name]={
+            'loc':[o.location.x,o.location.y,o.location.z],  # 父局部坐标
+            'bb':list(bb),      # 世界包围盒 [xmin,ymin,zmin,xmax,ymax,zmax]
+            'wloc':wloc,        # 世界原点坐标
         }
     return json.dumps(snap)
 
 
 def _restore_from_snapshot(snap_json):
-    """把对象还原到快照位置；返回成功还原的对象名列表。"""
-    if not snap_json:
-        return []
-    try:
-        snap = json.loads(snap_json)
-    except Exception:
-        return []
-    restored = []
-    for name, d in snap.items():
-        obj = bpy.data.objects.get(name)
-        if obj is None:
-            continue
-        x, y, z = d['loc']
-        obj.location.x = x
-        obj.location.y = y
-        obj.location.z = z
-        restored.append(name)
-    return restored
+    if not snap_json: return
+    try: snap=json.loads(snap_json)
+    except: return
+    for name,d in snap.items():
+        obj=bpy.data.objects.get(name)
+        if obj: x,y,z=d['loc']; obj.location.x=x; obj.location.y=y; obj.location.z=z
 
 
 def _groups_from_snapshot(snap_json, use_parent, use_collection, scene=None):
-    """从快照重建分组信息，使用快照中保存的包围盒（不依赖当前物体位置）。"""
-    if not snap_json:
-        return []
-    try:
-        snap = json.loads(snap_json)
-    except Exception:
-        return []
-    objs = [bpy.data.objects.get(n) for n in snap]
-    objs = [o for o in objs if o is not None]
-    if not objs:
-        return []
-    groups = _build_groups(objs, use_parent, use_collection, scene)
-    items = []
+    if not snap_json: return []
+    try: snap=json.loads(snap_json)
+    except: return []
+    objs=[bpy.data.objects.get(n) for n in snap]
+    objs=[o for o in objs if o]
+    if not objs: return []
+    groups=_build_groups(objs,use_parent,use_collection,scene)
+    items=[]
     for g in groups:
-        # 合并组内所有对象的快照包围盒
-        mn = [1e18, 1e18, 1e18]
-        mx = [-1e18, -1e18, -1e18]
+        mn=[1e18]*3; mx=[-1e18]*3
         for o in g['all']:
-            if o.name not in snap:
-                continue
-            bb = snap[o.name]['bb']
-            for i in range(3):
-                mn[i] = min(mn[i], bb[i])
-                mx[i] = max(mx[i], bb[i + 3])
-        w = max(mx[0] - mn[0], 1e-6)
-        h = max(mx[1] - mn[1], 1e-6)
-        items.append({
-            'roots': g['roots'],
-            'w': w, 'h': h,
-            'cx': (mn[0] + mx[0]) / 2.0,
-            'cy': (mn[1] + mx[1]) / 2.0,
-            'minz': mn[2],
-            'area': w * h,
-        })
+            if o.name not in snap: continue
+            bb=snap[o.name]['bb']
+            for i in range(3): mn[i]=min(mn[i],bb[i]); mx[i]=max(mx[i],bb[i+3])
+        w=max(mx[0]-mn[0],1e-6); h=max(mx[1]-mn[1],1e-6)
+        items.append({'roots':g['roots'],'w':w,'h':h,
+                      'cx':(mn[0]+mx[0])/2,'cy':(mn[1]+mx[1])/2,
+                      'minz':mn[2],'area':w*h})
     return items
 
 
-# =============================================================================
-# 算子
-# =============================================================================
+# ── 算子 ────────────────────────────────────────────────────────────────────
 class QOPS_OT_auto_arrange(bpy.types.Operator):
-    """将选中物体在 XY 平面自动铺陈排列（以世界原点居中）"""
-    bl_idname = "qops.auto_arrange"
-    bl_label = "自动铺陈排列"
-    bl_options = {'REGISTER', 'UNDO'}
+    """将选中物体在 XY 平面自动铺陈排列"""
+    bl_idname="qops.auto_arrange"; bl_label="自动铺陈排列"
+    bl_options={'REGISTER','UNDO'}
 
-    # ── F9 可见参数 ──────────────────────────────────────────────────────────
-    arr_mode: bpy.props.EnumProperty(
-        name="模式",
-        items=[('COLS', "按列数", ""), ('ROWS', "按行数", "")],
-        default='COLS')
-    cols: bpy.props.IntProperty(name="列数", default=5, min=1, max=100)
-    rows: bpy.props.IntProperty(name="行数", default=3, min=1, max=100)
-    padding: bpy.props.FloatProperty(
-        name="间距",
-        description="相邻物体包围盒之间的空隙（不是中心距）",
-        default=0.1, min=0.0, soft_max=5.0)
-    sort_by: bpy.props.EnumProperty(
-        name="排序",
-        items=[('SIZE_ASC', "由小到大", ""),
-               ('SIZE_DESC', "由大到小", ""),
-               ('NONE', "不排序", "")],
-        default='SIZE_ASC')
-    align_ground: bpy.props.BoolProperty(
-        name="底部贴地",
-        description="每组包围盒最低点对齐 Z=0",
-        default=True)
-
-    # ── 隐藏（结构性，invoke 时从场景属性复制）────────────────────────────
-    use_parent: bpy.props.BoolProperty(default=False, options={'HIDDEN'})
-    use_collection: bpy.props.BoolProperty(default=False, options={'HIDDEN'})
-    # 关键：属性名不能以下划线开头，否则 Blender 不注册，redo 时永远是空串
-    pos_json: bpy.props.StringProperty(default='', options={'HIDDEN'})
-    sort_order: bpy.props.StringProperty(default='', options={'HIDDEN'})
+    arr_mode:    bpy.props.EnumProperty(name="模式",items=[('COLS',"按列数",""),('ROWS',"按行数","")],default='COLS')
+    cols:        bpy.props.IntProperty(name="列数",default=5,min=1,max=100)
+    rows:        bpy.props.IntProperty(name="行数",default=3,min=1,max=100)
+    padding:     bpy.props.FloatProperty(name="间距",description="相邻包围盒边界间空隙",default=0.1,min=0.0,soft_max=5.0)
+    sort_by:     bpy.props.EnumProperty(name="排序",items=[('SIZE_ASC',"由小到大",""),('SIZE_DESC',"由大到小",""),('NONE',"不排序","")],default='SIZE_ASC')
+    align_ground:bpy.props.BoolProperty(name="底部贴地",description="包围盒最低点对齐 Z=0",default=True)
+    use_parent:  bpy.props.BoolProperty(default=False,options={'HIDDEN'})
+    use_collection:bpy.props.BoolProperty(default=False,options={'HIDDEN'})
+    pos_json:    bpy.props.StringProperty(default='',options={'HIDDEN'})
 
     @classmethod
-    def poll(cls, context):
-        return bool(context.selected_objects)
+    def poll(cls,ctx): return bool(ctx.selected_objects)
 
-    def invoke(self, context, event):
-        sc = context.scene
-        self.arr_mode       = getattr(sc, 'qops_arr_mode', 'COLS')
-        self.cols           = getattr(sc, 'qops_arr_cols', 5)
-        self.rows           = getattr(sc, 'qops_arr_rows', 3)
-        self.padding        = getattr(sc, 'qops_arr_padding', 0.1)
-        self.sort_by        = getattr(sc, 'qops_arr_sort', 'SIZE_ASC')
-        self.align_ground   = getattr(sc, 'qops_arr_ground', True)
-        self.use_parent     = getattr(sc, 'qops_arr_use_parent', False)
-        self.use_collection = getattr(sc, 'qops_arr_use_collection', False)
-        # 快照：在对象未移动时拍，包含位置 + 包围盒
-        self.pos_json = _take_snapshot(context.selected_objects)
-        return self.execute(context)
+    def invoke(self,ctx,event):
+        sc=ctx.scene
+        self.arr_mode      =getattr(sc,'qops_arr_mode','COLS')
+        self.cols          =getattr(sc,'qops_arr_cols',5)
+        self.rows          =getattr(sc,'qops_arr_rows',3)
+        self.padding       =getattr(sc,'qops_arr_padding',0.1)
+        self.sort_by       =getattr(sc,'qops_arr_sort','SIZE_ASC')
+        self.align_ground  =getattr(sc,'qops_arr_ground',True)
+        self.use_parent    =getattr(sc,'qops_arr_use_parent',False)
+        self.use_collection=getattr(sc,'qops_arr_use_collection',False)
+        self.pos_json=_take_snapshot(ctx.selected_objects)
+        return self.execute(ctx)
 
-    def execute(self, context):
+    def execute(self,ctx):
         if not self.pos_json:
-            # 没有快照（直接调用 execute 而非 invoke）→ 实时拍
-            self.pos_json = _take_snapshot(context.selected_objects)
+            self.pos_json=_take_snapshot(ctx.selected_objects)
 
-        # ① 还原到原始位置（F9 redo 时确保从同一起点出发）
+        # ① 还原
         _restore_from_snapshot(self.pos_json)
 
-        # ② 从快照重建分组 + 包围盒（完全不依赖当前物体位置）
-        items = _groups_from_snapshot(
-            self.pos_json, self.use_parent, self.use_collection, context.scene)
+        # ② 分组 + 包围盒（来自快照，与当前位置无关）
+        items=_groups_from_snapshot(self.pos_json,self.use_parent,self.use_collection,ctx.scene)
         if not items:
-            self.report({'WARNING'}, "没有可排列的物体")
-            return {'CANCELLED'}
+            self.report({'WARNING'},"没有可排列的物体"); return {'CANCELLED'}
 
         # ③ 排序
-        if self.sort_by == 'SIZE_ASC':
-            items.sort(key=lambda b: b['area'])
-        elif self.sort_by == 'SIZE_DESC':
-            items.sort(key=lambda b: b['area'], reverse=True)
-        # 存储排序结果供 redo 一致性（可选）
+        if self.sort_by=='SIZE_ASC':   items.sort(key=lambda b:b['area'])
+        elif self.sort_by=='SIZE_DESC':items.sort(key=lambda b:b['area'],reverse=True)
 
         # ④ 计算网格
-        n = len(items)
-        if self.arr_mode == 'COLS':
-            ncols = max(1, self.cols)
-            nrows = math.ceil(n / ncols)
+        n=len(items)
+        if self.arr_mode=='COLS':
+            ncols=max(1,self.cols); nrows=math.ceil(n/ncols)
         else:
-            nrows = max(1, self.rows)
-            ncols = math.ceil(n / nrows)
+            nrows=max(1,self.rows); ncols=math.ceil(n/nrows)
+        col_w=[0.0]*ncols; row_h=[0.0]*nrows
+        for idx,b in enumerate(items):
+            r,c=divmod(idx,ncols)
+            if r<nrows: col_w[c]=max(col_w[c],b['w']); row_h[r]=max(row_h[r],b['h'])
+        pad=max(0.0,self.padding)
+        total_w=sum(col_w)+pad*max(ncols-1,0); total_h=sum(row_h)+pad*max(nrows-1,0)
+        col_xs=[]; cx=-total_w/2
+        for cw in col_w: col_xs.append(cx+cw/2); cx+=cw+pad
+        row_ys=[]; cy=total_h/2
+        for rh in row_h: row_ys.append(cy-rh/2); cy-=rh+pad
 
-        # 每列最大宽 / 每行最大高
-        col_w = [0.0] * ncols
-        row_h = [0.0] * nrows
-        for idx, b in enumerate(items):
-            r, c = divmod(idx, ncols)
-            if r < nrows:
-                col_w[c] = max(col_w[c], b['w'])
-                row_h[r] = max(row_h[r], b['h'])
+        # ⑤ 计算每个物体目标「世界原点坐标」
+        #    target_world_origin = 目标槽位包围盒中心 - (原始世界包围盒中心 - 原始世界原点)
+        #                        = 目标槽位中心 - bbox_to_origin_offset
+        try: snap=json.loads(self.pos_json)
+        except: snap={}
 
-        pad = max(0.0, self.padding)
-        # 间距 = 相邻包围盒边界之间的空隙（pad 直接加在列宽/行高之间）
-        total_w = sum(col_w) + pad * max(ncols - 1, 0)
-        total_h = sum(row_h) + pad * max(nrows - 1, 0)
-        col_xs, cx = [], -total_w / 2.0
-        for cw in col_w:
-            col_xs.append(cx + cw / 2.0)
-            cx += cw + pad
-        row_ys, cy = [], total_h / 2.0
-        for rh in row_h:
-            row_ys.append(cy - rh / 2.0)
-            cy -= rh + pad
-
-        # ⑤ 移动（从快照原始位置出发 + 偏移）
-        try:
-            snap = json.loads(self.pos_json)
-        except Exception:
-            snap = {}
-
-        for idx, b in enumerate(items):
-            r, c = divmod(idx, ncols)
-            if r >= nrows:
-                break
-            target_cx = col_xs[c]
-            target_cy = row_ys[r]
-            dx = target_cx - b['cx']
-            dy = target_cy - b['cy']
-            dz = (-b['minz']) if self.align_ground else 0.0
+        world_tgt={}   # name → Vector (目标世界原点)
+        for idx,b in enumerate(items):
+            r,c=divmod(idx,ncols)
+            if r>=nrows: break
+            # 整组统一位移：组包围盒中心 → 槽位中心；组内所有根节点加同一位移
+            delta_x=col_xs[c]-b['cx']
+            delta_y=row_ys[r]-b['cy']
+            dz=(-b['minz']) if self.align_ground else 0.0
             for obj in b['roots']:
-                orig = snap.get(obj.name, {}).get('loc', None)
-                if orig:
-                    obj.location.x = orig[0] + dx
-                    obj.location.y = orig[1] + dy
-                    obj.location.z = orig[2] + dz
-                else:
-                    obj.location.x += dx
-                    obj.location.y += dy
-                    obj.location.z += dz
+                sd=snap.get(obj.name,{})
+                wloc=sd.get('wloc',sd.get('loc',[0,0,0]))
+                world_tgt[obj.name]=Vector((
+                    wloc[0]+delta_x,
+                    wloc[1]+delta_y,
+                    wloc[2]+dz
+                ))
 
-        self.report({'INFO'}, "已排列 %d 组 %d行×%d列" % (n, nrows, ncols))
+        all_names=set(world_tgt)
+        grouped=(self.use_parent or self.use_collection)
+
+        if grouped:
+            # ── 分组模式（v0.11.11 逻辑）：组内 roots 施加同一世界位移 ──
+            #    roots 已由 _build_groups 挑出，子物体随父自然移动，不碰
+            for name in all_names:
+                obj=bpy.data.objects.get(name)
+                if not obj: continue
+                tgt=world_tgt[name]
+                sd=snap.get(name,{})
+                orig_loc=sd.get('loc',[0,0,0])
+                wloc=sd.get('wloc',orig_loc)
+                # 世界位移量（组统一）→ 直接加到局部 location（父不在组内 roots，无需转换）
+                obj.location.x=orig_loc[0]+(tgt.x-wloc[0])
+                obj.location.y=orig_loc[1]+(tgt.y-wloc[1])
+                obj.location.z=orig_loc[2]+(tgt.z-wloc[2])
+        else:
+            # ── 独立模式：每个物体单独一格，先父后子 ──
+            #    对任意有父级的物体用 parent.matrix_world.inverted() @ 世界目标 求局部坐标；
+            #    每个深度层之间刷新矩阵，保证父级新位置对子级可见。
+            def _depth(obj):
+                d=0; p=obj.parent
+                while p and p.name in all_names: d+=1; p=p.parent
+                return d
+            by_depth=defaultdict(list)
+            for n2 in all_names:
+                obj=bpy.data.objects.get(n2)
+                if obj: by_depth[_depth(obj)].append(obj)
+
+            # 先整体刷新一次（restore 后矩阵回到原始）
+            try: ctx.view_layer.update()
+            except Exception: pass
+
+            for depth in sorted(by_depth.keys()):
+                for obj in by_depth[depth]:
+                    tgt=world_tgt[obj.name]   # 世界目标原点
+                    # 直接赋值 matrix_world：Blender 自动按父级当前矩阵反算 location，
+                    # 正确处理 matrix_parent_inverse，无需手动求逆。
+                    try:
+                        mw=obj.matrix_world.copy()
+                        mw.translation=tgt
+                        obj.matrix_world=mw
+                    except Exception:
+                        obj.location.x=tgt.x; obj.location.y=tgt.y; obj.location.z=tgt.z
+                # 本层移完刷新矩阵，供下一层子物体读取父级新位置
+                try: ctx.view_layer.update()
+                except Exception: pass
+
+        self.report({'INFO'},"已排列 %d 组 %d行×%d列"%(n,nrows,ncols))
         return {'FINISHED'}
 
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "arr_mode")
-        if self.arr_mode == 'COLS':
-            layout.prop(self, "cols")
-        else:
-            layout.prop(self, "rows")
-        layout.prop(self, "padding")
-        layout.prop(self, "sort_by")
-        layout.prop(self, "align_ground")
+    def draw(self,ctx):
+        layout=self.layout
+        layout.prop(self,"arr_mode")
+        layout.prop(self,"cols") if self.arr_mode=='COLS' else layout.prop(self,"rows")
+        layout.prop(self,"padding"); layout.prop(self,"sort_by"); layout.prop(self,"align_ground")
 
 
-classes = (QOPS_OT_auto_arrange,)
+classes=(QOPS_OT_auto_arrange,)
 
 
 def register_extra():
-    bpy.types.Scene.qops_arr_use_parent = bpy.props.BoolProperty(
-        name="保持父子级相对位置",
-        description="有父子关系的物体作为整体排列，只移动根节点",
-        default=False)
-    bpy.types.Scene.qops_arr_use_collection = bpy.props.BoolProperty(
-        name="保持集合内相对位置",
-        description="同集合物体作为整体(含父子级逻辑)",
-        default=False)
-    bpy.types.Scene.qops_arr_mode = bpy.props.EnumProperty(
-        name="模式",
-        items=[('COLS', "按列数", ""), ('ROWS', "按行数", "")],
-        default='COLS')
-    bpy.types.Scene.qops_arr_cols = bpy.props.IntProperty(
-        name="列数", default=5, min=1, max=100)
-    bpy.types.Scene.qops_arr_rows = bpy.props.IntProperty(
-        name="行数", default=3, min=1, max=100)
-    bpy.types.Scene.qops_arr_padding = bpy.props.FloatProperty(
-        name="间距", default=0.1, min=0.0)
-    bpy.types.Scene.qops_arr_sort = bpy.props.EnumProperty(
-        name="排序",
-        items=[('SIZE_ASC', "由小到大", ""),
-               ('SIZE_DESC', "由大到小", ""),
-               ('NONE', "不排序", "")],
-        default='SIZE_ASC')
-    bpy.types.Scene.qops_arr_ground = bpy.props.BoolProperty(
-        name="底部贴地",
-        description="每组包围盒最低点对齐 Z=0",
-        default=True)
+    bpy.types.Scene.qops_arr_use_parent=bpy.props.BoolProperty(name="保持父子级相对位置",description="有父子关系的物体作为整体排列",default=False)
+    bpy.types.Scene.qops_arr_use_collection=bpy.props.BoolProperty(name="保持集合内相对位置",description="同集合物体作为整体排列",default=False)
+    bpy.types.Scene.qops_arr_mode=bpy.props.EnumProperty(name="模式",items=[('COLS',"按列数",""),('ROWS',"按行数","")],default='COLS')
+    bpy.types.Scene.qops_arr_cols=bpy.props.IntProperty(name="列数",default=5,min=1,max=100)
+    bpy.types.Scene.qops_arr_rows=bpy.props.IntProperty(name="行数",default=3,min=1,max=100)
+    bpy.types.Scene.qops_arr_padding=bpy.props.FloatProperty(name="间距",default=0.1,min=0.0)
+    bpy.types.Scene.qops_arr_sort=bpy.props.EnumProperty(name="排序",items=[('SIZE_ASC',"由小到大",""),('SIZE_DESC',"由大到小",""),('NONE',"不排序","")],default='SIZE_ASC')
+    bpy.types.Scene.qops_arr_ground=bpy.props.BoolProperty(name="底部贴地",default=True)
 
 
 def unregister_extra():
-    for p in ("qops_arr_use_parent", "qops_arr_use_collection",
-              "qops_arr_mode", "qops_arr_cols", "qops_arr_rows",
-              "qops_arr_padding", "qops_arr_sort", "qops_arr_ground"):
-        try:
-            delattr(bpy.types.Scene, p)
-        except Exception:
-            pass
+    for p in("qops_arr_use_parent","qops_arr_use_collection","qops_arr_mode","qops_arr_cols","qops_arr_rows","qops_arr_padding","qops_arr_sort","qops_arr_ground"):
+        try: delattr(bpy.types.Scene,p)
+        except: pass
