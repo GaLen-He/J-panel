@@ -11,7 +11,9 @@
 - qops.toggle_wire_visibility     ->  Alt+Shift+W（切换线框物体显隐）
 - qops.coat_send                  ->  未绑定（发送到 3DCoat）
 - qops.coat_getback               ->  未绑定（从 3DCoat 取回）
-- qops.show_panel                 ->  未绑定（呼出完整 J Panel 面板）
+- qops.show_panel                 ->  Alt+Shift+J（呼出完整 J Panel 面板）
+- qops.activate_cut_tool          ->  Alt+Shift+C（激活 T 面板 J 切割工具）
+- qops.draw_cut                   ->  未绑定（绘制切割线；也可用 T 面板工具）
 
 如需改默认：修改下面对应 _new_kmi 的 type 与修饰键即可。
 
@@ -63,8 +65,21 @@ def register():
     # 3DCoat 取回 —— 默认不绑定，用户可自行设置
     _new_kmi(km, "qops.coat_getback", type='NONE', value='PRESS')
 
-    # 呼出完整 J Panel 面板 —— 默认不绑定，用户可自行设置
-    _new_kmi(km, "qops.show_panel", type='NONE', value='PRESS')
+    # 呼出完整 J Panel 面板 —— 默认 Alt+Shift+J
+    _new_kmi(km, "qops.show_panel",
+             type='J', value='PRESS', shift=True, alt=True)
+
+    # 激活 J 切割工具 —— 默认 Alt+Shift+C
+    _new_kmi(km, "qops.activate_cut_tool",
+             type='C', value='PRESS', shift=True, alt=True)
+
+    # 绘制切割线 —— 默认不绑定（主要通过 T 面板工具使用）
+    _new_kmi(km, "qops.draw_cut", type='NONE', value='PRESS')
+
+    # 曲线倒角 —— 曲线编辑模式，默认 Ctrl+Shift+B
+    km_curve = kc.keymaps.new(name='Curve', space_type='EMPTY')
+    _new_kmi(km_curve, "qops.curve_bevel",
+             type='B', value='PRESS', ctrl=True, shift=True)
 
 
 

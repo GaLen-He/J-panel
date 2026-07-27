@@ -33,3 +33,5 @@ def unregister():
             bpy.utils.unregister_class(cls)
         except Exception:
             pass
+
+from .panels import register_panel_props, unregister_panel_props

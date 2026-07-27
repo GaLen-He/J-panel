@@ -18,6 +18,9 @@ from . import mirror_ops
 from . import wireframe_ops
 from . import coat3d_ops
 from . import menu_ops
+from . import cutline_ops
+from . import arrange_ops
+from . import curve_ops
 
 # 所有功能模块，按需扩充
 _MODULES = (
@@ -26,6 +29,9 @@ _MODULES = (
     wireframe_ops,
     coat3d_ops,
     menu_ops,
+    cutline_ops,
+    arrange_ops,
+    curve_ops,
 )
 
 
@@ -38,9 +44,24 @@ def _all_classes():
 def register():
     for cls in _all_classes():
         bpy.utils.register_class(cls)
+    # 模块级附加注册（场景属性 / WorkSpaceTool 等）
+    for mod in _MODULES:
+        fn = getattr(mod, "register_extra", None)
+        if fn:
+            try:
+                fn()
+            except Exception:
+                pass
 
 
 def unregister():
+    for mod in reversed(_MODULES):
+        fn = getattr(mod, "unregister_extra", None)
+        if fn:
+            try:
+                fn()
+            except Exception:
+                pass
     for cls in reversed(list(_all_classes())):
         try:
             bpy.utils.unregister_class(cls)

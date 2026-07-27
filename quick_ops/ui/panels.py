@@ -49,20 +49,6 @@ class QOPS_PT_boolean_panel(bpy.types.Panel):
         )
         op.action = 'TOGGLE'
 
-        row = layout.row(align=True)
-        op_hide = row.operator(
-            QOPS_OT_toggle_boolean_visibility.bl_idname,
-            text="隐藏",
-            icon='HIDE_ON',
-        )
-        op_hide.action = 'HIDE'
-        op_show = row.operator(
-            QOPS_OT_toggle_boolean_visibility.bl_idname,
-            text="显示",
-            icon='HIDE_OFF',
-        )
-        op_show.action = 'SHOW'
-
         # ---- 线框显示物体（不限布尔）----
         layout.separator()
         layout.label(text="线框显示物体", icon='MOD_WIREFRAME')
@@ -72,19 +58,6 @@ class QOPS_PT_boolean_panel(bpy.types.Panel):
             icon='SHADING_WIRE',
         )
         op_w.action = 'TOGGLE'
-        row_w = layout.row(align=True)
-        w_hide = row_w.operator(
-            QOPS_OT_toggle_wire_visibility.bl_idname,
-            text="隐藏",
-            icon='HIDE_ON',
-        )
-        w_hide.action = 'HIDE'
-        w_show = row_w.operator(
-            QOPS_OT_toggle_wire_visibility.bl_idname,
-            text="显示",
-            icon='HIDE_OFF',
-        )
-        w_show.action = 'SHOW'
 
 
 class QOPS_PT_mirror_panel(bpy.types.Panel):
@@ -105,6 +78,62 @@ class QOPS_PT_mirror_panel(bpy.types.Panel):
         col = layout.column(align=True)
         col.label(text="移动鼠标选方向")
         col.label(text="左键确认 · 右键/ESC 取消")
+
+
+class QOPS_PT_cutline_panel(bpy.types.Panel):
+    bl_label = "切割工具"
+    bl_idname = "QOPS_PT_cutline_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "J"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(context.scene, "qops_cut_mode", text="子工具")
+        layout.prop(context.scene, "qops_cut_through")
+        if getattr(context.scene, "qops_cut_mode", '') == 'WAND':
+            layout.prop(context.scene, "qops_wand_tolerance")
+            layout.prop(context.scene, "qops_wand_smooth")
+            layout.prop(context.scene, "qops_wand_invert")
+        col = layout.column(align=True)
+        col.label(text="工具在 T 面板(编辑模式)「J 切割」", icon='TOOL_SETTINGS')
+        col.label(text="左键绘制 · Alt擦除 · Shift吸附")
+        col.label(text="Ctrl=编辑贝塞尔锚点 · Shift+D复制")
+        col.label(text="魔棒:点击色块自动描边(需图像纹理)")
+        col.label(text="G移动 S缩放 R旋转 · Ctrl+D 切子工具")
+        col.label(text="Enter确认切割 · 退格删除 · X清空")
+
+
+class QOPS_PT_arrange_panel(bpy.types.Panel):
+    bl_label = "自动排列"
+    bl_idname = "QOPS_PT_arrange_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "J"
+
+    def draw(self, context):
+        layout = self.layout
+        sc = context.scene
+        use_coll = getattr(sc, "qops_arr_use_collection", False)
+        # 分组方式：层层勾选（集合包含组逻辑）
+        layout.prop(sc, "qops_arr_use_parent")
+        row = layout.row()
+        row.prop(sc, "qops_arr_use_collection")
+        if use_coll:
+            row.label(text="(含组逻辑)", icon='INFO')
+        # 布局参数
+        row2 = layout.row(align=True)
+        row2.prop(sc, "qops_arr_mode", expand=True)
+        if getattr(sc, "qops_arr_mode", 'COLS') == 'COLS':
+            layout.prop(sc, "qops_arr_cols")
+        else:
+            layout.prop(sc, "qops_arr_rows")
+        layout.prop(sc, "qops_arr_padding")
+        layout.prop(sc, "qops_arr_sort")
+        layout.prop(sc, "qops_arr_ground")
+        layout.separator()
+        layout.operator("qops.auto_arrange", text="执行排列",
+                        icon='SORTSIZE')
 
 
 class QOPS_PT_coat3d_panel(bpy.types.Panel):
@@ -155,27 +184,41 @@ def _draw_all(layout, context):
     except Exception:
         prefs = None
 
+    # 顶部：钉固按钮 —— 打开常驻浮动小窗口（弹出面板机制上点外必关，浮窗才能真正停留）
+    layout.operator("qops.toggle_pin", text="钉固为浮动窗口", icon='WINDOW')
+    layout.separator(factor=0.3)
+
     box = layout.box()
     box.label(text="布尔运算体", icon='MOD_BOOLEAN')
     box.operator(QOPS_OT_select_boolean_objects.bl_idname,
                  text="选中相关布尔运算体", icon='RESTRICT_SELECT_OFF')
     op = box.operator(QOPS_OT_toggle_boolean_visibility.bl_idname,
                       text="切换显隐", icon='HIDE_OFF'); op.action = 'TOGGLE'
-    r = box.row(align=True)
-    a = r.operator(QOPS_OT_toggle_boolean_visibility.bl_idname, text="隐藏", icon='HIDE_ON'); a.action = 'HIDE'
-    b = r.operator(QOPS_OT_toggle_boolean_visibility.bl_idname, text="显示", icon='HIDE_OFF'); b.action = 'SHOW'
 
     box = layout.box()
     box.label(text="线框显示物体", icon='MOD_WIREFRAME')
     op = box.operator(QOPS_OT_toggle_wire_visibility.bl_idname,
                       text="切换线框物体显隐", icon='SHADING_WIRE'); op.action = 'TOGGLE'
-    r = box.row(align=True)
-    a = r.operator(QOPS_OT_toggle_wire_visibility.bl_idname, text="隐藏", icon='HIDE_ON'); a.action = 'HIDE'
-    b = r.operator(QOPS_OT_toggle_wire_visibility.bl_idname, text="显示", icon='HIDE_OFF'); b.action = 'SHOW'
 
     box = layout.box()
     box.label(text="镜像", icon='MOD_MIRROR')
     box.operator(QOPS_OT_interactive_mirror.bl_idname, text="交互式镜像", icon='MOD_MIRROR')
+
+    box = layout.box()
+    box.label(text="自动排列", icon='SORTSIZE')
+    sc = context.scene
+    box.prop(sc, "qops_arr_use_parent")
+    box.prop(sc, "qops_arr_use_collection")
+    row = box.row(align=True)
+    row.prop(sc, "qops_arr_mode", expand=True)
+    if getattr(sc, "qops_arr_mode", 'COLS') == 'COLS':
+        box.prop(sc, "qops_arr_cols")
+    else:
+        box.prop(sc, "qops_arr_rows")
+    box.prop(sc, "qops_arr_padding")
+    box.prop(sc, "qops_arr_sort")
+    box.prop(sc, "qops_arr_ground")
+    box.operator("qops.auto_arrange", text="执行排列", icon='SORTSIZE')
 
     box = layout.box()
     box.label(text="3DCoat 互导", icon='FILE_REFRESH')
@@ -215,11 +258,52 @@ class QOPS_OT_show_panel(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class QOPS_OT_toggle_pin(bpy.types.Operator):
+    """把 J Panel 钉固为一个独立浮动小窗口（可长期停留，不会点击后消失）"""
+    bl_idname = "qops.toggle_pin"
+    bl_label = "钉固 J Panel（浮动窗口）"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        try:
+            bpy.ops.wm.window_new()
+            win = context.window_manager.windows[-1]
+            area = win.screen.areas[0]
+            area.type = 'VIEW_3D'
+            space = area.spaces.active
+            # 打开 N 侧栏并尽量切到 J 标签
+            try:
+                space.show_region_ui = True
+            except Exception:
+                pass
+            for r in area.regions:
+                if r.type == 'UI':
+                    try:
+                        r.active_panel_category = "J"
+                    except Exception:
+                        pass
+        except Exception as e:
+            self.report({'ERROR'}, "打开浮动窗口失败：%s" % e)
+            return {'CANCELLED'}
+        return {'FINISHED'}
+
+
 # 本模块对外暴露的所有可注册类
 classes = (
     QOPS_PT_boolean_panel,
     QOPS_PT_mirror_panel,
+    QOPS_PT_cutline_panel,
+    QOPS_PT_arrange_panel,
     QOPS_PT_coat3d_panel,
     QOPS_PT_popover,
     QOPS_OT_show_panel,
+    QOPS_OT_toggle_pin,
 )
+
+
+def register_panel_props():
+    pass
+
+
+def unregister_panel_props():
+    pass

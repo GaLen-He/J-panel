@@ -63,3 +63,62 @@ def reset_state():
         gpu.state.depth_test_set('NONE')
     except Exception:
         pass
+
+
+# -----------------------------------------------------------------------------
+# 2D（屏幕空间）绘制辅助 —— 供切割线等模态工具用
+# 3.x 内置着色器为 '2D_UNIFORM_COLOR'，4.0+ 统一为 'UNIFORM_COLOR'
+# -----------------------------------------------------------------------------
+def _uniform_color_shader_name_2d():
+    return 'UNIFORM_COLOR' if bl_ver() >= (4, 0, 0) else '2D_UNIFORM_COLOR'
+
+
+def get_shader_2d():
+    return gpu.shader.from_builtin(_uniform_color_shader_name_2d())
+
+
+def draw_line_strip_2d(shader, coords, color, width=1.0, closed=False):
+    """屏幕空间画折线。coords: [(x,y), ...]；closed=True 时首尾相连。"""
+    if len(coords) < 2:
+        return
+    cc = [(c[0], c[1]) for c in coords]
+    if closed:
+        cc.append(cc[0])
+    try:
+        gpu.state.line_width_set(width)
+        gpu.state.blend_set('ALPHA')
+    except Exception:
+        pass
+    batch = batch_for_shader(shader, 'LINE_STRIP', {"pos": cc})
+    shader.bind()
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+
+
+def draw_points_2d(shader, coords, color, size=6.0):
+    if not coords:
+        return
+    try:
+        gpu.state.point_size_set(size)
+        gpu.state.blend_set('ALPHA')
+    except Exception:
+        pass
+    batch = batch_for_shader(shader, 'POINTS', {"pos": [(c[0], c[1]) for c in coords]})
+    shader.bind()
+    shader.uniform_float("color", color)
+    batch.draw(shader)
+
+
+def draw_tris_2d(shader, coords, color):
+    """屏幕空间画填充三角形。coords: [(x,y),...]，长度为3的倍数。"""
+    if len(coords) < 3:
+        return
+    try:
+        gpu.state.blend_set('ALPHA')
+    except Exception:
+        pass
+    batch = batch_for_shader(shader, 'TRIS',
+                             {"pos": [(c[0], c[1]) for c in coords]})
+    shader.bind()
+    shader.uniform_float("color", color)
+    batch.draw(shader)
