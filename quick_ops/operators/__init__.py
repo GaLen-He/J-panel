@@ -21,6 +21,7 @@ from . import menu_ops
 from . import cutline_ops
 from . import arrange_ops
 from . import curve_ops
+from . import merge_ops
 
 # 所有功能模块，按需扩充
 _MODULES = (
@@ -32,6 +33,7 @@ _MODULES = (
     cutline_ops,
     arrange_ops,
     curve_ops,
+    merge_ops,
 )
 
 

@@ -75,7 +75,17 @@ class QOPS_OT_interactive_mirror(bpy.types.Operator):
             # 单物体：以自身参考系(自身局部坐标)为基准做自镜像
             self.targets = [base]
             self.self_mode = True
-        self.origin = base.matrix_world.translation.copy()
+        # gizmo 原点 = 鼠标位置投影到 3D（用活动物体深度），
+        # 与物体大小无关，操作更直观
+        region = context.region
+        rv3d   = context.region_data
+        if region and rv3d:
+            mouse_2d = (event.mouse_region_x, event.mouse_region_y)
+            proj = view3d_utils.region_2d_to_location_3d(
+                region, rv3d, mouse_2d, base.matrix_world.translation)
+            self.origin = proj if proj is not None else base.matrix_world.translation.copy()
+        else:
+            self.origin = base.matrix_world.translation.copy()
         self.current = 0  # 默认高亮 +X
         self._shader = get_uniform_color_shader()
 
@@ -179,10 +189,29 @@ class QOPS_OT_interactive_mirror(bpy.types.Operator):
         self.current = best_i
 
     def _gizmo_length(self, context):
-        """gizmo 视觉长度，随物体尺寸略作缩放。"""
-        dims = self.base.dimensions
-        base_size = max(dims.x, dims.y, dims.z, 1.0)
-        return base_size * 0.9 + 0.5
+        """
+        固定屏幕像素半径（约 80 px）对应的世界空间长度。
+        每帧由逆投影计算，保证无论视图缩放和物体大小如何，
+        gizmo 在屏幕上始终占相近比例。
+        """
+        PIXEL_RADIUS = 80
+        try:
+            region = context.region
+            rv3d   = context.region_data
+            if region and rv3d:
+                c2d = view3d_utils.location_3d_to_region_2d(
+                    region, rv3d, self.origin)
+                if c2d is not None:
+                    off2d = Vector((c2d.x + PIXEL_RADIUS, c2d.y))
+                    off3d = view3d_utils.region_2d_to_location_3d(
+                        region, rv3d, off2d, self.origin)
+                    if off3d is not None:
+                        l = (off3d - self.origin).length
+                        if l > 1e-6:
+                            return l
+        except Exception:
+            pass
+        return 1.0
 
     # ---- 应用 ----
     def _apply(self, context):

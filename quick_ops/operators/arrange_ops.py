@@ -15,8 +15,33 @@ from collections import defaultdict
 
 
 # ── 包围盒 ──────────────────────────────────────────────────────────────────
-def _world_bbox_obj(obj):
+def _world_bbox_obj(obj, depsgraph=None):
+    """
+    物体的世界空间轴对齐包围盒。
+    优先用【评估后网格】的顶点（含阵列/镜像/曲线等生成式修改器产生的几何），
+    这样带 Array/Mirror 的物体边界会覆盖修改器生成的部分，避免排列重叠。
+    评估失败时回退到 obj.bound_box（原始网格）。
+    """
     mw = obj.matrix_world
+    # 尝试用评估网格顶点求真实边界
+    if depsgraph is not None:
+        try:
+            eval_obj = obj.evaluated_get(depsgraph)
+            me = eval_obj.to_mesh()
+            if me is not None and len(me.vertices) > 0:
+                xs=[]; ys=[]; zs=[]
+                for v in me.vertices:
+                    w = mw @ v.co
+                    xs.append(w.x); ys.append(w.y); zs.append(w.z)
+                eval_obj.to_mesh_clear()
+                if xs:
+                    return min(xs),min(ys),min(zs),max(xs),max(ys),max(zs)
+            else:
+                try: eval_obj.to_mesh_clear()
+                except Exception: pass
+        except Exception:
+            pass
+    # 回退：原始 bound_box
     if hasattr(obj,'bound_box') and obj.type in {
             'MESH','CURVE','SURFACE','FONT','META','LIGHT','CAMERA'}:
         try:
@@ -104,10 +129,10 @@ def _build_groups(objs, use_parent, use_collection, scene=None):
 
 
 # ── 快照 ────────────────────────────────────────────────────────────────────
-def _take_snapshot(objs):
+def _take_snapshot(objs, depsgraph=None):
     snap={}
     for o in objs:
-        bb=_world_bbox_obj(o)
+        bb=_world_bbox_obj(o, depsgraph)
         try: wloc=list(o.matrix_world.translation)
         except: wloc=[o.location.x,o.location.y,o.location.z]
         snap[o.name]={
@@ -178,12 +203,20 @@ class QOPS_OT_auto_arrange(bpy.types.Operator):
         self.align_ground  =getattr(sc,'qops_arr_ground',True)
         self.use_parent    =getattr(sc,'qops_arr_use_parent',False)
         self.use_collection=getattr(sc,'qops_arr_use_collection',False)
-        self.pos_json=_take_snapshot(ctx.selected_objects)
+        try:
+            dg=ctx.evaluated_depsgraph_get()
+        except Exception:
+            dg=None
+        self.pos_json=_take_snapshot(ctx.selected_objects, dg)
         return self.execute(ctx)
 
     def execute(self,ctx):
         if not self.pos_json:
-            self.pos_json=_take_snapshot(ctx.selected_objects)
+            try:
+                dg=ctx.evaluated_depsgraph_get()
+            except Exception:
+                dg=None
+            self.pos_json=_take_snapshot(ctx.selected_objects, dg)
 
         # ①' 集合模式：父子跨集合时，先把子物体移到父级所在集合
         if self.use_collection:

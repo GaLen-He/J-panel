@@ -76,6 +76,15 @@ def register():
     # 绘制切割线 —— 默认不绑定（主要通过 T 面板工具使用）
     _new_kmi(km, "qops.draw_cut", type='NONE', value='PRESS')
 
+    # 一键合并 —— 默认不绑定
+    _new_kmi(km, "qops.merge_export", type='NONE', value='PRESS')
+
+    # 选中关联控制曲线 —— 默认不绑定
+    _new_kmi(km, "qops.select_controlling_objects", type='NONE', value='PRESS')
+
+    # 清空材质槽 —— 默认不绑定
+    _new_kmi(km, "qops.clear_materials", type='NONE', value='PRESS')
+
     # 曲线倒角 —— 曲线编辑模式，默认 Ctrl+Shift+B
     km_curve = kc.keymaps.new(name='Curve', space_type='EMPTY')
     _new_kmi(km_curve, "qops.curve_bevel",

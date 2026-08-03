@@ -134,6 +134,25 @@ class QOPS_PT_arrange_panel(bpy.types.Panel):
         layout.separator()
         layout.operator("qops.auto_arrange", text="执行排列",
                         icon='SORTSIZE')
+        layout.separator(factor=0.3)
+        layout.operator("qops.select_controlling_objects",
+                        text="选中关联控制曲线", icon='CURVE_DATA')
+
+
+class QOPS_PT_merge_panel(bpy.types.Panel):
+    bl_label = "合并导出"
+    bl_idname = "QOPS_PT_merge_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "J"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("qops.merge_export", text="一键合并", icon='MOD_BOOLEAN')
+        layout.operator("qops.clear_materials", text="清空材质槽", icon='MATERIAL')
+        col = layout.column(align=True)
+        col.label(text="合并:打断关联→应用修改器→合并", icon='INFO')
+        col.label(text="布尔切割体自动忽略 · 原点置底部")
 
 
 class QOPS_PT_coat3d_panel(bpy.types.Panel):
@@ -175,37 +194,26 @@ class QOPS_PT_coat3d_panel(bpy.types.Panel):
         layout.label(text="路径/缩放在偏好设置里配置", icon='PREFERENCES')
 
 
-def _draw_all(layout, context):
-    """把全部功能画到给定 layout —— 供 N 面板与弹出面板共用。"""
-    prefs = None
-    try:
-        addon = context.preferences.addons.get(__package__.split(".")[0])
-        prefs = addon.preferences if addon else None
-    except Exception:
-        prefs = None
-
-    # 顶部：钉固按钮 —— 打开常驻浮动小窗口（弹出面板机制上点外必关，浮窗才能真正停留）
-    layout.operator("qops.toggle_pin", text="钉固为浮动窗口", icon='WINDOW')
-    layout.separator(factor=0.3)
-
-    box = layout.box()
+# ── 各功能区的绘制函数（供折叠/排序共用）────────────────────────────────
+def _sec_boolean(box, context):
     box.label(text="布尔运算体", icon='MOD_BOOLEAN')
     box.operator(QOPS_OT_select_boolean_objects.bl_idname,
                  text="选中相关布尔运算体", icon='RESTRICT_SELECT_OFF')
     op = box.operator(QOPS_OT_toggle_boolean_visibility.bl_idname,
-                      text="切换显隐", icon='HIDE_OFF'); op.action = 'TOGGLE'
-
-    box = layout.box()
+                      text="切换布尔显隐", icon='HIDE_OFF'); op.action = 'TOGGLE'
+    box.separator(factor=0.3)
     box.label(text="线框显示物体", icon='MOD_WIREFRAME')
-    op = box.operator(QOPS_OT_toggle_wire_visibility.bl_idname,
-                      text="切换线框物体显隐", icon='SHADING_WIRE'); op.action = 'TOGGLE'
+    op2 = box.operator(QOPS_OT_toggle_wire_visibility.bl_idname,
+                       text="切换线框物体显隐", icon='SHADING_WIRE'); op2.action = 'TOGGLE'
 
-    box = layout.box()
-    box.label(text="镜像", icon='MOD_MIRROR')
+
+
+
+def _sec_mirror(box, context):
     box.operator(QOPS_OT_interactive_mirror.bl_idname, text="交互式镜像", icon='MOD_MIRROR')
 
-    box = layout.box()
-    box.label(text="自动排列", icon='SORTSIZE')
+
+def _sec_arrange(box, context):
     sc = context.scene
     box.prop(sc, "qops_arr_use_parent")
     box.prop(sc, "qops_arr_use_collection")
@@ -219,9 +227,24 @@ def _draw_all(layout, context):
     box.prop(sc, "qops_arr_sort")
     box.prop(sc, "qops_arr_ground")
     box.operator("qops.auto_arrange", text="执行排列", icon='SORTSIZE')
+    box.separator(factor=0.3)
+    box.operator("qops.select_controlling_objects",
+                 text="选中关联控制曲线", icon='CURVE_DATA')
 
-    box = layout.box()
-    box.label(text="3DCoat 互导", icon='FILE_REFRESH')
+
+def _sec_merge(box, context):
+    box.operator("qops.merge_export", text="一键合并", icon='MOD_BOOLEAN')
+    box.operator("qops.clear_materials", text="清空材质槽", icon='MATERIAL')
+
+
+
+def _sec_coat(box, context):
+    prefs = None
+    try:
+        addon = context.preferences.addons.get(__package__.split(".")[0])
+        prefs = addon.preferences if addon else None
+    except Exception:
+        prefs = None
     if prefs is not None:
         box.prop(prefs, "coat_send_to_origin")
         rs = box.row(align=True)
@@ -230,6 +253,61 @@ def _draw_all(layout, context):
         box.prop(prefs, "coat_strip_empty_material")
     box.operator(QOPS_OT_coat_send.bl_idname, text="发送到 3DCoat", icon='EXPORT')
     box.operator(QOPS_OT_coat_getback.bl_idname, text="从 3DCoat 取回", icon='IMPORT')
+
+
+# key -> (标题, 图标, 绘制函数)
+_SECTIONS = {
+    'boolean': ("布尔线框显隐切换", 'MOD_WIREFRAME', _sec_boolean),
+    'mirror':  ("镜像", 'MOD_MIRROR', _sec_mirror),
+    'arrange': ("自动排列", 'SORTSIZE', _sec_arrange),
+    'merge':   ("合并导出", 'MOD_BOOLEAN', _sec_merge),
+    'coat':    ("3DCoat 互导", 'FILE_REFRESH', _sec_coat),
+}
+_SECTION_DEFAULT_ORDER = ['boolean', 'mirror', 'arrange', 'merge', 'coat']
+
+
+def _get_section_order(context):
+    raw = getattr(context.scene, "qops_section_order", "")
+    order = [k for k in raw.split(",") if k in _SECTIONS]
+    # 补齐新增/缺失的区块
+    for k in _SECTION_DEFAULT_ORDER:
+        if k not in order:
+            order.append(k)
+    return order
+
+
+def _draw_all(layout, context):
+    """把全部功能画到给定 layout —— 供 N 面板与弹出面板共用。
+    支持每个功能区折叠 + ▲▼ 调整顺序。"""
+    sc = context.scene
+
+    # 顶部：钉固按钮
+    layout.operator("qops.toggle_pin", text="钉固为浮动窗口", icon='WINDOW')
+    layout.separator(factor=0.3)
+
+    order = _get_section_order(context)
+    n = len(order)
+    for i, key in enumerate(order):
+        label, icon, draw_fn = _SECTIONS[key]
+        box = layout.box()
+        header = box.row(align=True)
+        # 折叠三角
+        expand_prop = "qops_sec_" + key
+        expanded = getattr(sc, expand_prop, True)
+        header.prop(sc, expand_prop,
+                    text="", emboss=False,
+                    icon='TRIA_DOWN' if expanded else 'TRIA_RIGHT')
+        header.label(text=label, icon=icon)
+        # ▲▼ 排序按钮
+        sub = header.row(align=True)
+        up = sub.operator("qops.move_section", text="", icon='TRIA_UP')
+        up.key = key; up.direction = 'UP'
+        sub.enabled = True
+        dn = sub.operator("qops.move_section", text="", icon='TRIA_DOWN')
+        dn.key = key; dn.direction = 'DOWN'
+        if expanded:
+            draw_fn(box, context)
+
 
 
 class QOPS_PT_popover(bpy.types.Panel):
@@ -288,12 +366,35 @@ class QOPS_OT_toggle_pin(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class QOPS_OT_move_section(bpy.types.Operator):
+    """在弹出面板里上移/下移某个功能区"""
+    bl_idname = "qops.move_section"
+    bl_label = "移动功能区"
+    bl_options = {'REGISTER'}
+    key: bpy.props.StringProperty(default='')
+    direction: bpy.props.EnumProperty(
+        items=[('UP', "上移", ""), ('DOWN', "下移", "")], default='UP')
+
+    def execute(self, context):
+        order = _get_section_order(context)
+        if self.key not in order:
+            return {'CANCELLED'}
+        i = order.index(self.key)
+        j = i - 1 if self.direction == 'UP' else i + 1
+        if 0 <= j < len(order):
+            order[i], order[j] = order[j], order[i]
+            context.scene.qops_section_order = ",".join(order)
+        return {'FINISHED'}
+
+
 # 本模块对外暴露的所有可注册类
 classes = (
+    QOPS_OT_move_section,
     QOPS_PT_boolean_panel,
     QOPS_PT_mirror_panel,
     QOPS_PT_cutline_panel,
     QOPS_PT_arrange_panel,
+    QOPS_PT_merge_panel,
     QOPS_PT_coat3d_panel,
     QOPS_PT_popover,
     QOPS_OT_show_panel,
@@ -302,8 +403,20 @@ classes = (
 
 
 def register_panel_props():
-    pass
+    for key in _SECTION_DEFAULT_ORDER:
+        setattr(bpy.types.Scene, "qops_sec_" + key,
+                bpy.props.BoolProperty(name=key, default=True))
+    bpy.types.Scene.qops_section_order = bpy.props.StringProperty(
+        name="功能区顺序", default=",".join(_SECTION_DEFAULT_ORDER))
 
 
 def unregister_panel_props():
-    pass
+    for key in _SECTION_DEFAULT_ORDER:
+        try:
+            delattr(bpy.types.Scene, "qops_sec_" + key)
+        except Exception:
+            pass
+    try:
+        del bpy.types.Scene.qops_section_order
+    except Exception:
+        pass

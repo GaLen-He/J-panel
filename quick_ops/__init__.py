@@ -32,7 +32,7 @@ quick_ops/
 bl_info = {
     "name": "J Panel",
     "author": "Jialiang",
-    "version": (0, 11, 16),
+    "version": (0, 12, 6),
     "blender": (3, 0, 0),
     "location": "View3D > 侧栏 (N) > J",
     "description": "常用基础操作集成到 N 面板，支持快捷键与 PME。含布尔运算体管理、交互式镜像修改器。",
