@@ -31,9 +31,6 @@ class QOPS_PT_boolean_panel(bpy.types.Panel):
         layout = self.layout
 
         # 顶部：一键呼出包含全部功能的弹出菜单（也可绑快捷键 / 供 PME 调用）
-        layout.operator("qops.show_menu", text="呼出功能菜单", icon='PRESET')
-        layout.separator()
-
         layout.operator(
             QOPS_OT_select_boolean_objects.bl_idname,
             text="选中相关布尔运算体",
